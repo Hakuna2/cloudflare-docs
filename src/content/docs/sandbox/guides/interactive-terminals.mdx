@@ -1,0 +1,433 @@
+---
+title: Build interactive terminals
+pcx_content_type: how-to
+sidebar:
+  order: 12
+description: Create terminal interfaces using PTY with real-time input/output handling.
+---
+
+import { TypeScriptExample } from "~/components";
+
+This guide shows you how to build interactive terminal experiences using the PTY (pseudo-terminal) API. PTY provides full terminal emulation for running interactive applications like shells, REPLs, and text-based UIs.
+
+## Choose PTY or exec
+
+Use PTY when your application needs true terminal emulation:
+
+- Interactive shells (bash, zsh, fish)
+- Text editors (vim, nano, emacs)
+- Interactive REPLs (python, node, irb)
+- Text-based UIs (htop, tmux, menu systems)
+- Tools that check for TTY (applications using `isatty()`)
+
+For non-interactive commands, use [`exec()`](/sandbox/api/commands/#exec) instead, which is simpler and more efficient.
+
+## Create a basic terminal
+
+Start with a simple bash terminal:
+
+<TypeScriptExample>
+```
+import { getSandbox } from '@cloudflare/sandbox';
+
+const sandbox = getSandbox(env.Sandbox, 'terminal-demo');
+
+// Create PTY with 80x24 dimensions (standard terminal size)
+const pty = await sandbox.pty.create({
+  cols: 80,
+  rows: 24,
+  command: ['/bin/bash']
+});
+
+// Listen for output
+pty.onData((data) => {
+  console.log('Terminal output:', data);
+});
+
+// Send commands
+await pty.write('echo "Hello from PTY"\n');
+await pty.write('pwd\n');
+await pty.write('ls -la\n');
+```
+</TypeScriptExample>
+
+## Handle terminal resize
+
+Update PTY dimensions when the terminal window resizes:
+
+<TypeScriptExample>
+```
+const pty = await sandbox.pty.create({ cols: 80, rows: 24 });
+
+// Listen for browser window resize events
+window.addEventListener('resize', async () => {
+  const terminalElement = document.getElementById('terminal');
+  const cols = Math.floor(terminalElement.clientWidth / charWidth);
+  const rows = Math.floor(terminalElement.clientHeight / charHeight);
+
+  await pty.resize(cols, rows);
+});
+```
+</TypeScriptExample>
+
+## Build a web-based terminal
+
+Use xterm.js to create a browser-based terminal interface:
+
+<TypeScriptExample>
+```
+import { Terminal } from '@xterm/xterm';
+import '@xterm/xterm/css/xterm.css';
+
+// Create xterm.js terminal
+const term = new Terminal({
+  cols: 80,
+  rows: 24,
+  cursorBlink: true,
+  theme: {
+    background: '#1e1e1e',
+    foreground: '#d4d4d4'
+  }
+});
+
+term.open(document.getElementById('terminal'));
+
+// Create PTY matching terminal dimensions
+const pty = await sandbox.pty.create({
+  cols: term.cols,
+  rows: term.rows
+});
+
+// Connect PTY output to terminal display
+pty.onData((data) => {
+  term.write(data);
+});
+
+// Connect terminal input to PTY
+term.onData(async (data) => {
+  await pty.write(data);
+});
+
+// Sync resize events
+term.onResize(async ({ cols, rows }) => {
+  await pty.resize(cols, rows);
+});
+
+// Handle PTY exit
+pty.onExit((exitCode) => {
+  term.writeln(`\r\nProcess exited with code ${exitCode}`);
+  term.write('Press any key to close...');
+});
+```
+</TypeScriptExample>
+
+## Run interactive applications
+
+Launch applications that require TTY:
+
+<TypeScriptExample>
+```
+// Python REPL
+const pythonRepl = await sandbox.pty.create({
+  command: ['python3', '-i'],
+  cols: 100,
+  rows: 30
+});
+
+pythonRepl.onData((data) => console.log(data));
+
+await pythonRepl.write('import sys\n');
+await pythonRepl.write('print(sys.version)\n');
+await pythonRepl.write('2 + 2\n');
+
+// Node.js REPL
+const nodeRepl = await sandbox.pty.create({
+  command: ['node'],
+  cwd: '/workspace/my-project'
+});
+
+await nodeRepl.write('const x = 42;\n');
+await nodeRepl.write('console.log(x * 2);\n');
+
+// Text editor (vim)
+const editor = await sandbox.pty.create({
+  command: ['vim', 'README.md'],
+  cwd: '/workspace'
+});
+
+// Send vim commands
+await editor.write('iHello from vim!\x1b'); // Insert mode, type, then ESC
+await editor.write(':wq\n'); // Save and quit
+```
+</TypeScriptExample>
+
+## Send control characters
+
+Control the terminal using special characters:
+
+<TypeScriptExample>
+```
+const pty = await sandbox.pty.create();
+
+// Ctrl+C (interrupt)
+await pty.write('\x03');
+
+// Ctrl+D (EOF/exit)
+await pty.write('\x04');
+
+// Ctrl+Z (suspend)
+await pty.write('\x1a');
+
+// Ctrl+L (clear screen)
+await pty.write('\x0c');
+
+// Arrow keys (ANSI escape sequences)
+await pty.write('\x1b[A'); // Up arrow
+await pty.write('\x1b[B'); // Down arrow
+await pty.write('\x1b[C'); // Right arrow
+await pty.write('\x1b[D'); // Left arrow
+
+// Function keys
+await pty.write('\x1bOP'); // F1
+await pty.write('\x1bOQ'); // F2
+```
+</TypeScriptExample>
+
+## Attach PTY to sessions
+
+Attach a terminal to an existing session to inherit its context:
+
+<TypeScriptExample>
+```
+// Create session and set up environment
+const session = await sandbox.sessions.create({
+  cwd: '/workspace/my-project',
+  env: {
+    NODE_ENV: 'development',
+    DEBUG: '*'
+  }
+});
+
+// Run setup commands
+await sandbox.exec('npm install', { sessionId: session.id });
+await sandbox.exec('npm run build', { sessionId: session.id });
+
+// Attach interactive terminal to the prepared session
+const pty = await sandbox.pty.attach(session.id, {
+  cols: 120,
+  rows: 40
+});
+
+// User can now interact with the terminal in the configured context
+```
+</TypeScriptExample>
+
+## Wait for PTY exit
+
+Use the `exited` promise to wait for the terminal to close:
+
+<TypeScriptExample>
+```
+const pty = await sandbox.pty.create({
+  command: ['python3', 'script.py']
+});
+
+// Collect all output
+let fullOutput = '';
+pty.onData((data) => {
+  fullOutput += data;
+});
+
+// Wait for completion
+const { exitCode } = await pty.exited;
+
+if (exitCode === 0) {
+  console.log('Success! Output:', fullOutput);
+} else {
+  console.error('Failed with exit code:', exitCode);
+}
+```
+</TypeScriptExample>
+
+## Process PTY output with async iteration
+
+Use async iteration for script-based PTY interaction:
+
+<TypeScriptExample>
+```
+const pty = await sandbox.pty.create({
+  command: ['python3', 'data-processor.py']
+});
+
+// Send initial input
+await pty.write('start\n');
+
+// Process output line by line
+for await (const chunk of pty) {
+  console.log('Received:', chunk);
+
+  // React to output patterns
+  if (chunk.includes('Enter filename:')) {
+    await pty.write('data.csv\n');
+  } else if (chunk.includes('Processing complete')) {
+    console.log('Done processing!');
+    break;
+  } else if (chunk.includes('ERROR')) {
+    console.error('Error detected:', chunk);
+    await pty.kill();
+    break;
+  }
+}
+```
+</TypeScriptExample>
+
+## Manage multiple terminals
+
+Create and manage multiple PTY sessions simultaneously:
+
+<TypeScriptExample>
+```
+// Create multiple terminals
+const terminals = await Promise.all([
+  sandbox.pty.create({ command: ['/bin/bash'] }),
+  sandbox.pty.create({ command: ['python3', '-i'] }),
+  sandbox.pty.create({ command: ['node'] })
+]);
+
+// Set up output handlers
+terminals.forEach((pty, index) => {
+  pty.onData((data) => {
+    console.log(`Terminal ${index}:`, data);
+  });
+});
+
+// Send commands to specific terminals
+await terminals[0].write('echo "Hello from bash"\n');
+await terminals[1].write('print("Hello from Python")\n');
+await terminals[2].write('console.log("Hello from Node")\n');
+
+// List all active PTYs
+const allPtys = await sandbox.pty.list();
+console.log(`Active terminals: ${allPtys.length}`);
+
+// Cleanup
+for (const pty of terminals) {
+  await pty.kill();
+}
+```
+</TypeScriptExample>
+
+## Handle disconnection and reconnection
+
+PTY sessions continue running after disconnection for the configured timeout:
+
+<TypeScriptExample>
+```
+// Create PTY with 60-second disconnect timeout
+const pty = await sandbox.pty.create({
+  disconnectTimeout: 60000 // 60 seconds
+});
+
+// Save the PTY ID
+const ptyId = pty.id;
+
+// Detach without killing
+pty.close();
+
+// PTY continues running for 60 seconds
+// Later reconnect before timeout expires
+const reconnected = await sandbox.pty.getById(ptyId);
+
+// Resume interaction
+reconnected.onData((data) => console.log(data));
+await reconnected.write('echo "Reconnected!"\n');
+```
+</TypeScriptExample>
+
+## Error handling
+
+Handle PTY errors gracefully:
+
+<TypeScriptExample>
+```
+try {
+  const pty = await sandbox.pty.create({
+    command: ['nonexistent-command']
+  });
+
+  pty.onExit((exitCode) => {
+    if (exitCode !== 0) {
+      console.error('Command failed with exit code:', exitCode);
+    }
+  });
+
+} catch (error) {
+  console.error('Failed to create PTY:', error.message);
+}
+
+// Handle write errors
+try {
+  await pty.write('command\n');
+} catch (error) {
+  console.error('Failed to write to PTY:', error.message);
+  // PTY may have exited or connection lost
+}
+
+// Handle resize errors
+try {
+  await pty.resize(200, 50);
+} catch (error) {
+  console.error('Failed to resize PTY:', error.message);
+}
+```
+</TypeScriptExample>
+
+## Best practices
+
+### Terminal dimensions
+
+Use appropriate terminal dimensions for your use case:
+
+- **Standard terminal**: 80x24 (classic VT100 size)
+- **Modern terminal**: 100x30 or 120x40 (more readable)
+- **Maximum size**: 1000x1000 (hardware limit)
+
+### Performance
+
+For high-throughput output:
+
+- Buffer output chunks before displaying
+- Use `requestAnimationFrame` for terminal updates
+- Debounce resize events (300-500ms)
+
+### Security
+
+- Validate user input before sending to PTY
+- Sanitize output before displaying in web interfaces
+- Use session isolation for multi-user scenarios
+- Set reasonable disconnect timeouts to free resources
+
+### Resource cleanup
+
+Always clean up PTY sessions when done:
+
+<TypeScriptExample>
+```
+const pty = await sandbox.pty.create();
+
+try {
+  // Use PTY
+  await pty.write('command\n');
+} finally {
+  // Clean up
+  await pty.kill();
+}
+```
+</TypeScriptExample>
+
+## Related resources
+
+- [PTY API reference](/sandbox/api/pty/) - Complete API documentation
+- [Commands API](/sandbox/api/commands/) - Non-interactive command execution
+- [Sessions API](/sandbox/api/sessions/) - Session management
+- [WebSocket connections guide](/sandbox/guides/websocket-connections/) - Real-time communication
